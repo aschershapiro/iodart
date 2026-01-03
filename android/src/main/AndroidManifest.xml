@@ -1,0 +1,10 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.iodart">
+
+    <!-- Required for TCP/UDP network communication -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    
+    <!-- Required for USB serial communication -->
+    <uses-feature android:name="android.hardware.usb.host" />
+
+</manifest>
