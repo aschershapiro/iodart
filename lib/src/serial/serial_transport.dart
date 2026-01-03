@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import '../transport.dart';
 import 'serial_config.dart';
 

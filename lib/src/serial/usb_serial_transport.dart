@@ -41,7 +41,7 @@ class UsbSerialTransport extends TransportBase
     final devices = await UsbSerial.listDevices();
     return devices.map((device) {
       return SerialDeviceInfo(
-        portName: device.deviceName ?? 'Unknown',
+        portName: device.deviceName,
         description: device.productName,
         manufacturer: device.manufacturerName,
         serialNumber: device.serial,

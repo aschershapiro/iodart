@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'transport.dart';
@@ -30,6 +31,18 @@ abstract class TransportBase implements Transport {
   /// Whether this transport has been disposed.
   bool _isDisposed = false;
 
+  /// Whether reconnection is currently in progress.
+  bool _isReconnecting = false;
+
+  /// Current reconnection attempt count.
+  int _reconnectionAttempts = 0;
+
+  /// Completer for the current reconnection operation.
+  Completer<void>? _reconnectionCompleter;
+
+  /// Whether reconnection has been cancelled.
+  bool _reconnectionCancelled = false;
+
   @override
   Stream<Uint8List> get onData => _dataController.stream;
 
@@ -47,6 +60,12 @@ abstract class TransportBase implements Transport {
 
   @override
   bool get isConnected => _state == TransportState.connected;
+
+  @override
+  bool get isReconnecting => _isReconnecting;
+
+  @override
+  int get reconnectionAttempts => _reconnectionAttempts;
 
   /// Whether this transport has been disposed.
   bool get isDisposed => _isDisposed;
@@ -101,6 +120,7 @@ abstract class TransportBase implements Transport {
   Future<void> dispose() async {
     if (_isDisposed) return;
 
+    cancelReconnection();
     _isDisposed = true;
     updateState(TransportState.disconnected);
 
@@ -108,5 +128,102 @@ abstract class TransportBase implements Transport {
     await _errorController.close();
     await _disconnectController.close();
     await _stateController.close();
+  }
+
+  @override
+  Future<void> reconnect([
+    ReconnectionConfig config = const ReconnectionConfig(),
+  ]) async {
+    checkNotDisposed();
+
+    // If already reconnecting, wait for the existing operation
+    if (_isReconnecting && _reconnectionCompleter != null) {
+      return _reconnectionCompleter!.future;
+    }
+
+    // If already connected, nothing to do
+    if (isConnected) {
+      return;
+    }
+
+    _isReconnecting = true;
+    _reconnectionCancelled = false;
+    _reconnectionAttempts = 0;
+    _reconnectionCompleter = Completer<void>();
+
+    updateState(TransportState.reconnecting);
+
+    Object? lastError;
+    Duration currentDelay = config.initialDelay;
+
+    try {
+      while (!_reconnectionCancelled) {
+        _reconnectionAttempts++;
+
+        // Check if we've exceeded max attempts (-1 means infinite)
+        if (config.maxAttempts != -1 &&
+            _reconnectionAttempts > config.maxAttempts) {
+          throw ReconnectionFailedException(
+            attempts: _reconnectionAttempts - 1,
+            lastError: lastError,
+          );
+        }
+
+        try {
+          await connect();
+
+          // Connection successful
+          _isReconnecting = false;
+          _reconnectionCompleter?.complete();
+          _reconnectionCompleter = null;
+          return;
+        } catch (e) {
+          lastError = e;
+          emitError(e);
+
+          // Check if cancelled during connect attempt
+          if (_reconnectionCancelled || _isDisposed) {
+            break;
+          }
+
+          // Wait before next attempt
+          await Future<void>.delayed(currentDelay);
+
+          // Calculate next delay with exponential backoff
+          currentDelay = _calculateNextDelay(currentDelay, config);
+        }
+      }
+
+      // If we get here, reconnection was cancelled
+      if (_reconnectionCancelled) {
+        updateState(TransportState.disconnected);
+      }
+    } finally {
+      _isReconnecting = false;
+      if (!(_reconnectionCompleter?.isCompleted ?? true)) {
+        _reconnectionCompleter?.completeError(
+          ReconnectionFailedException(
+            attempts: _reconnectionAttempts,
+            lastError: lastError,
+          ),
+        );
+      }
+      _reconnectionCompleter = null;
+    }
+  }
+
+  @override
+  void cancelReconnection() {
+    _reconnectionCancelled = true;
+    _isReconnecting = false;
+  }
+
+  /// Calculate the next delay using exponential backoff.
+  Duration _calculateNextDelay(
+      Duration currentDelay, ReconnectionConfig config) {
+    final nextDelayMs =
+        (currentDelay.inMilliseconds * config.backoffMultiplier).round();
+    final cappedDelayMs = math.min(nextDelayMs, config.maxDelay.inMilliseconds);
+    return Duration(milliseconds: cappedDelayMs);
   }
 }
